@@ -1,6 +1,6 @@
 [package]
 name = "herring"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
@@ -11,8 +11,7 @@ description = "CLI for listing recent ENA studies with ONT data"
 home = "=0.5.5"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-# Pure-Rust HTTP client pinned to pre-2024-edition dependency stack
-reqwest = { version = "=0.11.27", default-features = false, features = ["json", "gzip", "brotli", "deflate", "rustls-tls-native-roots", "blocking"] }
+reqwest = { version = "=0.11.27", default-features = false, features = ["json","gzip","brotli","deflate","rustls-tls-native-roots","blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["clock"] }
@@ -20,3 +19,5 @@ percent-encoding = "2"
 url = "=2.4.1"
 idna = "=0.4.0"
 polars = { version = "=0.43.1", default-features = false, features = ["strings"] }
+log = "0.4"
+env_logger = "0.11"

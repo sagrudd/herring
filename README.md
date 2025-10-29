@@ -1,3 +1,3 @@
-# herring
+# herring 🐟 — ENA study lister for Oxford Nanopore data
 
-A Rust CLI to list ENA *studies* (projects) released or updated in the last *N* weeks that include **Oxford Nanopore** sequencing, presented as a **Polars** table.
+Now with **verbose logging** (-v/-vv) and a **handshake** to ENA for diagnostics.

@@ -1,15 +1,9 @@
-//! ENA integration layer for `herring`.
-//
-//! Resilient ENA Portal API calls with retries and windowing.
-//
-//! - `dataPortal=ena` explicitly set
-//! - retry/backoff on 5xx/429
-//! - fallback to 14-day windows, dedupe by `run_accession`
 use anyhow::{bail, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::{blocking::Client, Certificate, StatusCode};
 use serde::Deserialize;
 use std::{collections::HashSet, env, fs, thread, time::Duration};
+use log::{debug, info, warn};
 
 const PORTAL_BASE: &str = "https://www.ebi.ac.uk/ena/portal/api";
 
@@ -55,23 +49,32 @@ fn make_client(ua: &str) -> Result<Client> {
     let mut builder = Client::builder().user_agent(ua);
     if env::var("HERRING_INSECURE_TLS").as_deref() == Ok("1") {
         builder = builder.danger_accept_invalid_certs(true);
+        warn!("TLS validation disabled via HERRING_INSECURE_TLS=1");
     }
     if let Ok(p) = env::var("HERRING_CA_BUNDLE") {
-        let pem = fs::read(p)?;
+        let pem = fs::read(&p)?;
         builder = builder.add_root_certificate(Certificate::from_pem(&pem)?);
+        info!("added extra root certificate(s) from {}", p);
     }
     let timeout = env::var("HERRING_TIMEOUT_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30);
     builder = builder.timeout(Duration::from_secs(timeout));
+    info!("HTTP client timeout = {}s", timeout);
     Ok(builder.build()?)
 }
 
 fn request_with_retries(client: &Client, url: &str) -> Result<reqwest::blocking::Response> {
     let mut delay = Duration::from_millis(400);
     for attempt in 0..5 {
+        info!("GET {} (attempt {} of 5)", url, attempt + 1);
         let resp = client.get(url).send();
         match resp {
-            Ok(r) if r.status().is_success() => return Ok(r),
+            Ok(r) if r.status().is_success() => {
+                info!("<- {}", r.status());
+                debug!("<- headers: {:?}", r.headers());
+                return Ok(r)
+            },
             Ok(r) if matches!(r.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT | StatusCode::INTERNAL_SERVER_ERROR) => {
+                warn!("<- {} (retryable)", r.status());
                 if attempt == 4 { return Ok(r); }
                 if let Some(retry_after) = r.headers().get(reqwest::header::RETRY_AFTER).and_then(|h| h.to_str().ok()).and_then(|s| s.parse::<u64>().ok()) {
                     thread::sleep(Duration::from_secs(retry_after));
@@ -81,8 +84,12 @@ fn request_with_retries(client: &Client, url: &str) -> Result<reqwest::blocking:
                 }
                 continue;
             }
-            Ok(r) => return Ok(r),
+            Ok(r) => {
+                warn!("<- {} (non-retryable)", r.status());
+                return Ok(r);
+            }
             Err(e) => {
+                warn!("transport error: {}", e);
                 if attempt == 4 { return Err(e).context("request error") }
                 thread::sleep(delay);
                 delay *= 2;
@@ -101,9 +108,24 @@ fn build_url(query: &str, fields: &str) -> String {
     )
 }
 
+fn handshake(client: &Client) -> Result<()> {
+    let url1 = format!("{}/returnFields?result=read_run", PORTAL_BASE);
+    let r1 = request_with_retries(client, &url1)?;
+    if !r1.status().is_success() { bail!("handshake returnFields failed: {}", r1.status()); }
+
+    let url2 = build_url("instrument_platform=\\\"OXFORD_NANOPORE\\\"", "run_accession").replace("limit=0", "limit=1");
+    let r2 = request_with_retries(client, &url2)?;
+    if !r2.status().is_success() { bail!("handshake minimal search failed: {}", r2.status()); }
+    Ok(())
+}
+
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.22 (+https://nanoporetech.com)";
+    let ua = "herring/0.1.23 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
+
+    if let Err(e) = handshake(&client) {
+        bail!("ENA handshake failed: {}", e);
+    }
 
     let fields = [
         "run_accession",
@@ -119,7 +141,6 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
         "submitted_bytes",
     ].join(",");
 
-    // 1) Full-window attempt
     let q_full = format!(
         "instrument_platform=\\\"OXFORD_NANOPORE\\\" AND (first_public>={d} OR last_updated>={d})",
         d = since.format("%Y-%m-%d")
@@ -128,10 +149,10 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
     let resp = request_with_retries(&client, &url_full)?;
     if resp.status().is_success() {
         let runs: Vec<RunRecord> = resp.json().context("decode read_run json")?;
+        info!("fetched {} runs in full-window request", runs.len());
         return Ok(runs);
     }
 
-    // 2) Windowed fallback
     let today = chrono::Utc::now().date_naive();
     let mut dedup: HashSet<String> = HashSet::new();
     let mut out: Vec<RunRecord> = Vec::new();
@@ -148,6 +169,7 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
         let r = request_with_retries(&client, &url)?;
         if !r.status().is_success() { bail!("ENA search(read_run) failed: {} (window {}..{})", r.status(), start, end); }
         let mut runs: Vec<RunRecord> = r.json().context("decode read_run json (windowed)")?;
+        let before = out.len();
         for rec in runs.drain(..) {
             if let Some(acc) = rec.run_accession.as_ref() {
                 if dedup.insert(acc.clone()) { out.push(rec); }
@@ -155,6 +177,7 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
                 out.push(rec);
             }
         }
+        info!("window {}..{} -> {} new runs ({} total)", start, end, out.len() - before, out.len());
         start = end + chrono::Duration::days(1);
     }
 

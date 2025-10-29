@@ -1,68 +1,69 @@
 #![doc = include_str!("../README.md")]
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use chrono::{Duration, Utc};
 use polars::prelude::*;
 use polars::prelude::SortMultipleOptions;
+use log::{info};
 
 mod ena;
 use ena::{fetch_runs_since, map_platform, map_strategy, RunRecord};
 
-/// Top-level CLI for the `herring` tool.
 #[derive(Parser, Debug)]
 #[command(name = "herring", version, about = "List recent ENA studies with Oxford Nanopore data")]
 struct Cli {
-    /// Subcommands (currently only `list`).
     #[command(subcommand)]
     command: Commands,
 }
 
-/// CLI subcommands.
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// List studies released or updated in the last N weeks (default: 8).
-    ///
-    /// The listing aggregates run-level records by `study_accession`.
-    /// See the README for column definitions.
     List {
         /// Weeks back from today (UTC).
         #[arg(short, long, default_value_t = 8)]
         weeks: i64,
+        /// Increase log verbosity: -v (info), -vv (debug)
+        #[arg(short, long, action = ArgAction::Count)]
+        verbose: u8,
     },
 }
 
-/// Program entrypoint.
+fn init_logger(verbosity: u8) {
+    use env_logger::Env;
+    let level = match verbosity { 0 => "warn", 1 => "info", _ => "debug" };
+    let env = Env::default().default_filter_or(level);
+    let mut b = env_logger::Builder::from_env(env);
+    b.format_timestamp_secs();
+    let _ = b.try_init();
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::List { weeks } => list_studies(weeks)?,
+        Commands::List { weeks, verbose } => {
+            init_logger(verbose);
+            list_studies(weeks)?
+        }
     }
     Ok(())
 }
 
-/// List ENA studies with Oxford Nanopore sequencing data released/updated in the
-/// last `weeks` weeks, aggregated at the study level and rendered as a table.
-///
-/// # Notes
-/// - Uses the ENA Portal API and requests run-level fields sufficient to build
-///   a study-level summary without a second query.
-/// - Printing is intentionally dependency-free (no fancy table crate) to keep
-///   MSRV low and builds fast.
 fn list_studies(weeks: i64) -> Result<()> {
     let since = (Utc::now() - Duration::weeks(weeks)).date_naive();
+    info!("listing studies since {} ({} weeks)", since, weeks);
 
     let runs: Vec<RunRecord> = fetch_runs_since(since)
         .context("fetching ONT runs from ENA portal API")?;
 
     if runs.is_empty() {
         println!("No Oxford Nanopore runs found in the last {} weeks.", weeks);
-        return Ok(());
+        return Ok(())
     }
 
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// Aggregated, per-study values accumulated from run-level rows.
     #[derive(Default)]
     struct Agg {
         plats: BTreeSet<String>,
@@ -93,7 +94,6 @@ fn list_studies(weeks: i64) -> Result<()> {
         a.bytes += bytes;
     }
 
-    /// A single row destined for the Polars DataFrame.
     #[derive(Clone)]
     struct Row {
         acc: String,
@@ -106,6 +106,7 @@ fn list_studies(weeks: i64) -> Result<()> {
         gbases: f64,
         gbytes: f64,
     }
+
     let mut rows: Vec<Row> = Vec::new();
 
     for (acc, a) in by_study.into_iter() {
@@ -121,7 +122,6 @@ fn list_studies(weeks: i64) -> Result<()> {
         rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, title: a.title, biosamples: a.samples.len() as u32, gbases, gbytes });
     }
 
-    // Build Polars DataFrame
     let acc: Vec<_> = rows.iter().map(|r| r.acc.as_str()).collect();
     let release: Vec<_> = rows.iter().map(|r| r.release.as_str()).collect();
     let platform: Vec<_> = rows.iter().map(|r| r.platform.as_str()).collect();
@@ -150,20 +150,16 @@ fn list_studies(weeks: i64) -> Result<()> {
     Ok(())
 }
 
-/// Pad a string on the right with spaces to a given width.
 fn pad(s: &str, width: usize) -> String {
     let len = s.chars().count();
     if len >= width { s.to_string() } else { format!("{s}{:>width$}", "", width = width - len) }
 }
 
-/// Print a `polars::DataFrame` as a simple, width-aligned table without
-/// introducing extra dependencies.
 fn print_df(df: &DataFrame) -> Result<()> {
     let cols = df.get_columns();
     let names: Vec<String> = df.get_column_names_owned().into_iter().map(|n| n.to_string()).collect();
     let nrows = df.height();
 
-    /// Project a cell to a printable string; `Null` becomes empty string.
     fn cell_as_str(s: &Series, r: usize) -> String {
         match s.get(r) {
             Ok(AnyValue::Null) => "".to_string(),
@@ -172,7 +168,6 @@ fn print_df(df: &DataFrame) -> Result<()> {
         }
     }
 
-    // Compute column widths
     let mut widths: Vec<usize> = names.iter().map(|n| n.chars().count()).collect();
     for (i, s) in cols.iter().enumerate() {
         for r in 0..nrows {
