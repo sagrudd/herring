@@ -1,10 +1,28 @@
 use anyhow::{bail, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use reqwest::blocking::Client;
+use reqwest::{blocking::Client, Certificate};
+use std::{fs, env};
 use serde::Deserialize;
 use std::collections::HashSet;
 
 const PORTAL_BASE: &str = "https://www.ebi.ac.uk/ena/portal/api";
+
+fn make_client(ua: &str) -> anyhow::Result<Client> {
+    let mut builder = Client::builder().user_agent(ua);
+
+    // Optional overrides via env:
+    // HERRING_INSECURE_TLS=1  -> accept invalid certs (NOT recommended)
+    // HERRING_CA_BUNDLE=/path/to/ca.pem -> add extra root(s) in PEM
+    if env::var("HERRING_INSECURE_TLS").as_deref() == Ok("1") {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    if let Ok(p) = env::var("HERRING_CA_BUNDLE") {
+        let pem = fs::read(p)?;
+        builder = builder.add_root_certificate(Certificate::from_pem(&pem)?);
+    }
+
+    Ok(builder.build()?)
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RunRecord {
@@ -69,11 +87,16 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
         fields = fields
     );
 
+    let client = make_client("herring/0.1.x (+https://nanoporetech.com)")?;
+    let resp = client.get(&url).send().context("request runs")?;
+
+    /* 
     let client = Client::builder()
         .user_agent("herring/0.1.10 (+https://nanoporetech.com)")
         .build()?;
 
     let resp = client.get(&url).send().context("request runs")?;
+    */
     if !resp.status().is_success() { bail!("ENA search(read_run) failed: {}", resp.status()); }
     let runs: Vec<RunRecord> = resp.json().context("decode runs json")?;
     Ok(runs)
@@ -82,9 +105,12 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
 pub fn fetch_studies_by_accessions(accs: &[String]) -> Result<Vec<StudyRecord>> {
     if accs.is_empty() { return Ok(vec![]); }
 
+    /* 
     let client = Client::builder()
         .user_agent("herring/0.1.10")
         .build()?;
+    */
+    let client = make_client("herring/0.1.x")?;
 
     let mut out: Vec<StudyRecord> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -109,6 +135,9 @@ pub fn fetch_studies_by_accessions(accs: &[String]) -> Result<Vec<StudyRecord>> 
             query = q,
             fields = fields
         );
+
+        
+
         let resp = client.get(&url).send().context("request studies")?;
         if !resp.status().is_success() { bail!("ENA search(study) failed: {}", resp.status()); }
         let mut v: Vec<StudyRecord> = resp.json().context("decode studies json")?;
