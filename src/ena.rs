@@ -1,3 +1,19 @@
+//! ENA client and data shaping utilities used by the `herring` binary.
+//!
+//! This module provides request construction, basic retry logic, and the
+//! functions that fetch ONT runs either for a rolling window (`first_public`
+//! **or** `last_updated`) or a fixed release window (`first_public` only).
+//!
+//! Network behavior (timeouts, TLS, retries) is centralized here.
+//!
+//! ## Environment variables
+//! - `HERRING_INSECURE_TLS=1` — disable TLS validation (debug only)
+//! - `HERRING_CA_BUNDLE=/path/to/ca.pem` — add custom CA roots
+//! - `HERRING_TIMEOUT_SECS` — request timeout in seconds
+//!
+//! ## Errors
+//! Functions return [`anyhow::Result`], wrapping transport and decode errors.
+
 use anyhow::{bail, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use reqwest::{blocking::Client, Certificate, StatusCode};
@@ -7,19 +23,32 @@ use log::{debug, info, warn};
 
 const PORTAL_BASE: &str = "https://www.ebi.ac.uk/ena/portal/api";
 
+/// A single ENA `read_run` row returned by the search endpoint.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RunRecord {
+    /// Run accession (may be absent in some API responses).
     pub run_accession: Option<String>,
+    /// Study accession this run belongs to.
     pub study_accession: String,
+    /// Sample accession for this run.
     pub sample_accession: Option<String>,
+    /// Base count for the run (string in API; parsed later as `u64`).
     pub base_count: Option<String>,
+    /// Instrument model (e.g. "PromethION", "GridION", "MinION").
     pub instrument_model: Option<String>,
+    /// ENA library strategy field.
     pub library_strategy: Option<String>,
+    /// Scientific name as reported by ENA.
     pub scientific_name: Option<String>,
+    /// First public date (YYYY-MM-DD).
     pub first_public: Option<String>,
+    /// Study title (if provided on the run row).
     pub study_title: Option<String>,
 }
 
+/// Map raw instrument model → a normalized ONT platform label.
+///
+/// Returns one of: "PromethION", "GridION", "MinION", or "Oxford Nanopore".
 pub fn map_platform(model: Option<&str>) -> &'static str {
     if let Some(m) = model {
         let m = m.to_ascii_lowercase();
@@ -31,6 +60,12 @@ pub fn map_platform(model: Option<&str>) -> &'static str {
     "Oxford Nanopore"
 }
 
+/// Map ENA `library_strategy` to a coarse sequencing type.
+///
+/// - Transcriptome bucket: `RNA-SEQ`, `TRANSCRIPTOME SEQUENCING`, `MRNA-SEQ`, `CDNA`
+/// - Metagenome bucket: `METAGENOME`, `METATRANSCRIPTOME`
+/// - Genome bucket: `WGS`, `WGA`, `HI-C`, `AMPLICON`, `AMPLICON SEQUENCING`
+/// - Otherwise: lowercase of the provided value or `"other"`
 pub fn map_strategy(s: &str) -> String {
     match s.to_ascii_uppercase().as_str() {
         "RNA-SEQ" | "TRANSCRIPTOME SEQUENCING" | "MRNA-SEQ" | "CDNA" => "transcriptome".to_string(),
@@ -43,6 +78,7 @@ pub fn map_strategy(s: &str) -> String {
     }
 }
 
+/// Construct a blocking HTTP client with optional TLS overrides and timeouts.
 fn make_client(ua: &str) -> Result<Client> {
     let mut builder = Client::builder().user_agent(ua);
     if env::var("HERRING_INSECURE_TLS").as_deref() == Ok("1") {
@@ -60,6 +96,9 @@ fn make_client(ua: &str) -> Result<Client> {
     Ok(builder.build()?)
 }
 
+/// Send a GET with basic **exponential backoff** on common retryable statuses.
+///
+/// Retryable: `429, 500, 502, 503, 504`. Non-retryable statuses return immediately.
 fn request_with_retries(client: &Client, url: &str) -> Result<reqwest::blocking::Response> {
     let mut delay = Duration::from_millis(400);
     for attempt in 0..5 {
@@ -97,6 +136,7 @@ fn request_with_retries(client: &Client, url: &str) -> Result<reqwest::blocking:
     unreachable!();
 }
 
+/// Build the ENA search URL for an arbitrary query + field list.
 fn build_url(query: &str, fields: &str) -> String {
     let enc_query = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
     let url = format!(
@@ -109,12 +149,14 @@ fn build_url(query: &str, fields: &str) -> String {
     url
 }
 
+/// Lightweight health check of ENA endpoints used by this client.
 fn ping_results(client: &Client) -> Result<()> {
     let url = format!("{}/results?dataPortal=ena", PORTAL_BASE);
     let r = request_with_retries(client, &url)?;
     if r.status().is_success() { Ok(()) } else { bail!("results ping failed: {}", r.status()) }
 }
 
+/// Perform a minimal handshake to surface early connectivity / rate limit issues.
 fn handshake(client: &Client) -> Result<()> {
     if let Err(e) = ping_results(client) {
         warn!("ENA results ping failed: {}", e);
@@ -129,8 +171,9 @@ fn handshake(client: &Client) -> Result<()> {
     Ok(())
 }
 
+/// Fetch runs within a **rolling** window: `first_public >= since` **OR** `last_updated >= since`.
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.37 (+https://nanoporetech.com)";
+    let ua = "herring/0.2.0 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
@@ -194,8 +237,9 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
     Ok(out)
 }
 
+/// Fetch runs within a **fixed release** window: `first_public ∈ [start, end]`.
 pub fn fetch_runs_between(start: chrono::NaiveDate, end: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.37 (+https://nanoporetech.com)";
+    let ua = "herring/0.2.0 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
     if let Err(e) = handshake(&client) {
         warn!("ENA handshake warning: {}", e);

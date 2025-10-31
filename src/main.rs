@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
@@ -17,12 +19,14 @@ use ena::{fetch_runs_since, fetch_runs_between, map_platform, map_strategy, RunR
 
 #[derive(Parser, Debug)]
 #[command(name = "herring", version, about = "List recent ENA studies with Oxford Nanopore data")]
+/// Command-line interface definition.
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
+/// Top-level commands for `herring`.
 enum Commands {
     /// List studies released or updated in the last N weeks (default: 8).
     List {
@@ -47,6 +51,7 @@ enum Commands {
     },
 }
 
+/// Initialize env_logger with a default filter from verbosity flags.
 fn init_logger(verbosity: u8) {
     use env_logger::Env;
     let level = match verbosity { 0 => "warn", 1 => "info", _ => "debug" };
@@ -56,6 +61,7 @@ fn init_logger(verbosity: u8) {
     let _ = b.try_init();
 }
 
+/// Entry point.
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -68,6 +74,7 @@ fn main() -> Result<()> {
 }
 
 #[derive(Serialize, Clone)]
+/// JSON row shape used by `--json` export.
 struct OutRow<'a> {
     study_accession: &'a str,
     release_date: &'a str,
@@ -80,6 +87,7 @@ struct OutRow<'a> {
 }
 
 #[derive(Clone)]
+/// Internal aggregation row used for building tables/exports.
 struct Row {
     acc: String,
     release: String,
@@ -92,6 +100,7 @@ struct Row {
     title: String,
 }
 
+/// Execute the listing workflow and print/export results.
 fn list_studies(weeks: i64, from: Option<String>, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
     let runs: Vec<RunRecord> = if let Some(from_s) = from {
         let start = NaiveDate::parse_from_str(&from_s, "%Y-%m-%d")
@@ -190,6 +199,7 @@ fn list_studies(weeks: i64, from: Option<String>, csv: Option<PathBuf>, json: Op
     Ok(())
 }
 
+/// Write CSV export with human-formatted `gigabases`.
 fn write_csv(rows: &[Row], path: PathBuf) -> Result<()> {
     let mut wtr = csv::Writer::from_path(&path)?;
     wtr.write_record([
@@ -206,6 +216,7 @@ fn write_csv(rows: &[Row], path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Write JSON export (machine-friendly, numeric `gigabases`).
 fn write_json(rows: &[Row], path: PathBuf) -> Result<()> {
     let out: Vec<OutRow> = rows.iter().map(|r| OutRow {
         study_accession: &r.acc,
@@ -223,6 +234,7 @@ fn write_json(rows: &[Row], path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Minimal HTML escaping.
 fn escape_html(s: &str) -> String {
 
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\"', "&quot;").replace('\'', "&#39;")
@@ -233,6 +245,7 @@ fn wikipedia_search_url(title: &str) -> String {
     format!("https://en.wikipedia.org/w/index.php?search={}", enc)
 }
 
+/// Write a sortable HTML table; ENA accessions + species Wikipedia search links.
 fn write_html(rows: &[Row], path: PathBuf) -> Result<()> {
     let mut f = File::create(&path)?;
     let mut html = String::new();
@@ -299,11 +312,13 @@ fn write_html(rows: &[Row], path: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Right-pad with spaces to width, measured in `chars()`.
 fn pad(s: &str, width: usize) -> String {
     let len = s.chars().count();
     if len >= width { s.to_string() } else { format!("{s}{:>width$}", "", width = width - len) }
 }
 
+/// Print a simple monospace table to stdout.
 fn print_df(df: &DataFrame) -> Result<()> {
     let cols = df.get_columns();
     let names: Vec<String> = df.get_column_names_owned().into_iter().map(|n| n.to_string()).collect();
