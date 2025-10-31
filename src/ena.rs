@@ -11,6 +11,8 @@ const PORTAL_BASE: &str = "https://www.ebi.ac.uk/ena/portal/api";
 pub struct RunRecord {
     pub run_accession: Option<String>,
     pub study_accession: String,
+    pub sample_accession: Option<String>,
+    pub base_count: Option<String>,
     pub instrument_model: Option<String>,
     pub library_strategy: Option<String>,
     pub scientific_name: Option<String>,
@@ -128,7 +130,7 @@ fn handshake(client: &Client) -> Result<()> {
 }
 
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.30 (+https://nanoporetech.com)";
+    let ua = "herring/0.1.32 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
@@ -138,6 +140,8 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
     let fields = [
         "run_accession",
         "study_accession",
+        "sample_accession",
+        "base_count",
         "instrument_model",
         "library_strategy",
         "scientific_name",

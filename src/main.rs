@@ -69,6 +69,8 @@ fn list_studies(weeks: i64) -> Result<()> {
         plats: BTreeSet<String>,
         types: BTreeSet<String>,
         species: BTreeSet<String>,
+        samples: BTreeSet<String>,
+        bases: u128,
         title: String,
         release: String,
     }
@@ -82,6 +84,12 @@ fn list_studies(weeks: i64) -> Result<()> {
         if let Some(sp) = r.scientific_name.as_deref() { if !sp.is_empty() { a.species.insert(sp.to_string()); } }
         if let Some(fp) = r.first_public.as_deref() { if a.release.is_empty() || fp < a.release.as_str() { a.release = fp.to_string(); } }
         if let Some(t) = r.study_title.as_deref() { if !t.is_empty() && a.title.is_empty() { a.title = t.to_string(); } }
+        if let Some(samp) = r.sample_accession.as_deref() { if !samp.is_empty() { a.samples.insert(samp.to_string()); } }
+        if let Some(bc) = r.base_count.as_deref() {
+            if let Ok(v) = bc.parse::<u64>() {
+                a.bases = a.bases.saturating_add(v as u128);
+            }
+        }
     }
 
     #[derive(Clone)]
@@ -91,6 +99,8 @@ fn list_studies(weeks: i64) -> Result<()> {
         platform: String,
         seq_type: String,
         species: String,
+        biosamples: u32,
+        gigabases: f64,
         title: String,
     }
 
@@ -104,7 +114,9 @@ fn list_studies(weeks: i64) -> Result<()> {
             if v.len() > 5 { v.truncate(5); }
             v.join(", ")
         };
-        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, title: a.title });
+        let biosamples = a.samples.len() as u32;
+        let gigabases = (a.bases as f64) / 1e9_f64;
+        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, biosamples, gigabases, title: a.title });
     }
 
     let acc: Vec<_> = rows.iter().map(|r| r.acc.as_str()).collect();
@@ -112,6 +124,8 @@ fn list_studies(weeks: i64) -> Result<()> {
     let platform: Vec<_> = rows.iter().map(|r| r.platform.as_str()).collect();
     let seq_type: Vec<_> = rows.iter().map(|r| r.seq_type.as_str()).collect();
     let species: Vec<_> = rows.iter().map(|r| r.species.as_str()).collect();
+    let biosamples: Vec<u32> = rows.iter().map(|r| r.biosamples).collect();
+    let gigabases: Vec<f64> = rows.iter().map(|r| r.gigabases).collect();
     let title: Vec<_> = rows.iter().map(|r| r.title.as_str()).collect();
 
     let df = df!(
@@ -120,6 +134,8 @@ fn list_studies(weeks: i64) -> Result<()> {
         "platform" => platform,
         "sequencing_type" => seq_type,
         "species" => species,
+        "biosamples" => biosamples,
+        "gigabases" => gigabases,
         "study_title" => title,
     )?;
 
