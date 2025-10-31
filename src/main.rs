@@ -6,6 +6,10 @@ use chrono::{Duration, Utc};
 use polars::prelude::*;
 use polars::prelude::SortMultipleOptions;
 use log::info;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+use serde::Serialize;
 
 mod ena;
 use ena::{fetch_runs_since, map_platform, map_strategy, RunRecord};
@@ -27,6 +31,15 @@ enum Commands {
         /// Increase log verbosity: -v (info), -vv (debug)
         #[arg(short, long, action = ArgAction::Count)]
         verbose: u8,
+        /// Write CSV to path
+        #[arg(long)]
+        csv: Option<PathBuf>,
+        /// Write JSON to path
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Write HTML to path (sortable table)
+        #[arg(long)]
+        html: Option<PathBuf>,
     },
 }
 
@@ -42,15 +55,40 @@ fn init_logger(verbosity: u8) {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::List { weeks, verbose } => {
+        Commands::List { weeks, verbose, csv, json, html } => {
             init_logger(verbose);
-            list_studies(weeks)?
+            list_studies(weeks, csv, json, html)?
         }
     }
     Ok(())
 }
 
-fn list_studies(weeks: i64) -> Result<()> {
+#[derive(Serialize, Clone)]
+struct OutRow<'a> {
+    study_accession: &'a str,
+    release_date: &'a str,
+    platform: &'a str,
+    sequencing_type: &'a str,
+    species: &'a str,
+    biosamples: u32,
+    gigabases: f64,
+    study_title: &'a str,
+}
+
+#[derive(Clone)]
+struct Row {
+    acc: String,
+    release: String,
+    platform: String,
+    seq_type: String,
+    species: String,
+    biosamples: u32,
+    gigabases_num: f64,
+    gigabases_str: String,
+    title: String,
+}
+
+fn list_studies(weeks: i64, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
     let since = (Utc::now() - Duration::weeks(weeks)).date_naive();
     info!("listing studies since {} ({} weeks)", since, weeks);
 
@@ -92,18 +130,6 @@ fn list_studies(weeks: i64) -> Result<()> {
         }
     }
 
-    #[derive(Clone)]
-    struct Row {
-        acc: String,
-        release: String,
-        platform: String,
-        seq_type: String,
-        species: String,
-        biosamples: u32,
-        gigabases: f64,
-        title: String,
-    }
-
     let mut rows: Vec<Row> = Vec::new();
 
     for (acc, a) in by_study.into_iter() {
@@ -115,17 +141,20 @@ fn list_studies(weeks: i64) -> Result<()> {
             v.join(", ")
         };
         let biosamples = a.samples.len() as u32;
-        let gigabases = (a.bases as f64) / 1e9_f64;
-        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, biosamples, gigabases, title: a.title });
+        let gb = (a.bases as f64) / 1e9_f64;
+        let gigabases_num = (gb * 10.0).round() / 10.0; // one decimal
+        let gigabases_str = format!("{:.1}", gigabases_num);
+        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, biosamples, gigabases_num, gigabases_str, title: a.title });
     }
 
+    // DataFrame for stdout (gigabases as formatted string)
     let acc: Vec<_> = rows.iter().map(|r| r.acc.as_str()).collect();
     let release: Vec<_> = rows.iter().map(|r| r.release.as_str()).collect();
     let platform: Vec<_> = rows.iter().map(|r| r.platform.as_str()).collect();
     let seq_type: Vec<_> = rows.iter().map(|r| r.seq_type.as_str()).collect();
     let species: Vec<_> = rows.iter().map(|r| r.species.as_str()).collect();
     let biosamples: Vec<u32> = rows.iter().map(|r| r.biosamples).collect();
-    let gigabases: Vec<f64> = rows.iter().map(|r| r.gigabases).collect();
+    let gigabases: Vec<_> = rows.iter().map(|r| r.gigabases_str.as_str()).collect();
     let title: Vec<_> = rows.iter().map(|r| r.title.as_str()).collect();
 
     let df = df!(
@@ -142,6 +171,113 @@ fn list_studies(weeks: i64) -> Result<()> {
     let df = df.sort(["release_date"], SortMultipleOptions { descending: vec![true], ..Default::default() })?;
 
     print_df(&df)?;
+
+    if let Some(path) = csv { write_csv(&rows, path)?; }
+    if let Some(path) = json { write_json(&rows, path)?; }
+    if let Some(path) = html { write_html(&rows, path)?; }
+
+    Ok(())
+}
+
+fn write_csv(rows: &[Row], path: PathBuf) -> Result<()> {
+    let mut wtr = csv::Writer::from_path(&path)?;
+    wtr.write_record([
+        "study_accession","release_date","platform","sequencing_type","species","biosamples","gigabases","study_title"
+    ])?;
+    for r in rows {
+        wtr.write_record([
+            &r.acc, &r.release, &r.platform, &r.seq_type, &r.species,
+            &r.biosamples.to_string(), &r.gigabases_str, &r.title
+        ])?;
+    }
+    wtr.flush()?;
+    println!("Wrote CSV to {}", path.display());
+    Ok(())
+}
+
+fn write_json(rows: &[Row], path: PathBuf) -> Result<()> {
+    let out: Vec<OutRow> = rows.iter().map(|r| OutRow {
+        study_accession: &r.acc,
+        release_date: &r.release,
+        platform: &r.platform,
+        sequencing_type: &r.seq_type,
+        species: &r.species,
+        biosamples: r.biosamples,
+        gigabases: r.gigabases_num,
+        study_title: &r.title,
+    }).collect();
+    let f = File::create(&path)?;
+    serde_json::to_writer_pretty(f, &out)?;
+    println!("Wrote JSON to {}", path.display());
+    Ok(())
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\"', "&quot;").replace('\'', "&#39;")
+}
+
+fn write_html(rows: &[Row], path: PathBuf) -> Result<()> {
+    let mut f = File::create(&path)?;
+    let mut html = String::new();
+    html.push_str("<!doctype html><meta charset=\"utf-8\"><title>herring results</title>\n");
+    html.push_str("<style>body{font:14px system-ui, sans-serif;padding:16px} table{border-collapse:collapse;width:100%} th,td{border:1px solid #ddd;padding:6px 8px} th{cursor:pointer;background:#f6f6f6;position:sticky;top:0} tr:nth-child(even){background:#fafafa} a{color:#0645ad;text-decoration:none}</style>\n");
+    html.push_str("<h1>herring results</h1>\n");
+    html.push_str("<p>Click a column header to sort. Default sort is by date (newest first).</p>\n");
+    html.push_str("<table id=\"t\"><thead><tr>\n");
+    let headers = [
+        ("study_accession","str"),("release_date","date"),("platform","str"),("sequencing_type","str"),("species","str"),("biosamples","num"),("gigabases","num"),("study_title","str")
+    ];
+    for (h, ty) in headers.iter() {
+        html.push_str(&format!("<th data-type=\"{}\">{}</th>", ty, h.replace('_'," ")));
+    }
+    html.push_str("</tr></thead><tbody>\n");
+    for r in rows {
+        let url = format!("https://www.ebi.ac.uk/ena/browser/view/{}", r.acc);
+        html.push_str("<tr>");
+        html.push_str(&format!("<td><a href=\"{}\" target=\"_blank\" rel=\"noopener\">{}</a></td>", url, escape_html(&r.acc)));
+        html.push_str(&format!("<td>{}</td>", escape_html(&r.release)));
+        html.push_str(&format!("<td>{}</td>", escape_html(&r.platform)));
+        html.push_str(&format!("<td>{}</td>", escape_html(&r.seq_type)));
+        html.push_str(&format!("<td>{}</td>", escape_html(&r.species)));
+        html.push_str(&format!("<td data-v=\"{}\">{}</td>", r.biosamples, r.biosamples));
+        html.push_str(&format!("<td data-v=\"{}\">{}</td>", r.gigabases_num, r.gigabases_str));
+        html.push_str(&format!("<td>{}</td>", escape_html(&r.title)));
+        html.push_str("</tr>\n");
+    }
+    html.push_str("</tbody></table>\n");
+    html.push_str(r#"<script>
+(function(){
+  const tbl=document.getElementById('t');
+  const get=(cell)=>{
+    const td=cell;
+    const v=td.getAttribute('data-v');
+    if(v!==null) return parseFloat(v);
+    return td.textContent.trim();
+  };
+  const cmp=(a,b,ty)=>{
+    if(ty==='num') return a-b;
+    if(ty==='date') return (a>b)-(a<b);
+    return a.localeCompare(b);
+  };
+  tbl.querySelectorAll('th').forEach((th,i)=>{
+    let asc=false;
+    th.addEventListener('click',()=>{
+      const ty=th.getAttribute('data-type');
+      const rows=[...tbl.tBodies[0].rows];
+      rows.sort((r1,r2)=>{
+        const a=get(r1.cells[i]);
+        const b=get(r2.cells[i]);
+        return (asc?1:-1)*cmp(a,b,ty);
+      });
+      asc=!asc;
+      rows.forEach(r=>tbl.tBodies[0].appendChild(r));
+    });
+  });
+})();
+</script>"#);
+
+    f.write_all(html.as_bytes())?;
+    println!("Wrote HTML to {}", path.display());
     Ok(())
 }
 

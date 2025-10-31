@@ -1,6 +1,6 @@
 [package]
 name = "herring"
-version = "0.1.32"
+version = "0.1.34"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT OR Apache-2.0"
@@ -21,3 +21,4 @@ idna = "=0.4.0"
 polars = { version = "=0.43.1", default-features = false, features = ["strings"] }
 log = "0.4"
 env_logger = "0.11"
+csv = "1"

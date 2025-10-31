@@ -130,7 +130,7 @@ fn handshake(client: &Client) -> Result<()> {
 }
 
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.32 (+https://nanoporetech.com)";
+    let ua = "herring/0.1.34 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
