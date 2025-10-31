@@ -173,7 +173,7 @@ fn handshake(client: &Client) -> Result<()> {
 
 /// Fetch runs within a **rolling** window: `first_public >= since` **OR** `last_updated >= since`.
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.2.0 (+https://nanoporetech.com)";
+    let ua = "herring/0.2.1 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
@@ -239,7 +239,7 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
 
 /// Fetch runs within a **fixed release** window: `first_public ∈ [start, end]`.
 pub fn fetch_runs_between(start: chrono::NaiveDate, end: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.2.0 (+https://nanoporetech.com)";
+    let ua = "herring/0.2.1 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
     if let Err(e) = handshake(&client) {
         warn!("ENA handshake warning: {}", e);

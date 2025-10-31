@@ -1,6 +1,6 @@
 # herring 🐟 — ENA study lister for Oxford Nanopore data
 
-**Version:** 0.2.0 (minor release)
+**Version:** 0.2.1 (minor release)
 
 > CLI that finds ENA studies with Oxford Nanopore (ONT) sequencing runs and summarizes them in a table.  
 > Supports rolling and fixed-date windows, CSV/JSON/HTML export, sortable HTML, and Wikipedia **search** links for species.
@@ -162,3 +162,21 @@ Please include this attribution in derivative works.
 
 ## 📜 License
 Dual-licensed under **MIT** or **Apache-2.0** at your option.
+
+---
+
+## 🧭 Date windowing recap
+- **Rolling (default):** `first_public >= now-weeks OR last_updated >= now-weeks`.
+- **Fixed release window:** `--from YYYY-MM-DD [--to YYYY-MM-DD] [--weeks N]`
+  - If `--to` is present: inclusive `[FROM, TO]`.
+  - Else: `[FROM, FROM + N weeks)` (end-exclusive in concept; implemented as end-1 day per API semantics).
+
+---
+
+## 🤖 Continuous Integration
+A GitHub Actions workflow runs on every push/PR:
+- `cargo fmt --check`
+- `cargo clippy -D warnings`
+- `cargo build --locked`
+- `cargo check --locked`
+Target toolchain: Rust **1.80.0**.

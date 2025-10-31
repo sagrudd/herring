@@ -2,7 +2,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Parser, Subcommand};
 use chrono::{Duration, Utc, NaiveDate};
 use polars::prelude::*;
@@ -36,6 +36,9 @@ enum Commands {
         /// Start date (YYYY-MM-DD) for a fixed release window. Uses first_public between FROM and FROM+weeks.
         #[arg(long, value_name="YYYY-MM-DD")]
         from: Option<String>,
+        /// End date (YYYY-MM-DD) for a fixed release window; requires --from. Inclusive.
+        #[arg(long, value_name="YYYY-MM-DD")]
+        to: Option<String>,
         /// Increase log verbosity: -v (info), -vv (debug)
         #[arg(short, long, action = ArgAction::Count)]
         verbose: u8,
@@ -65,9 +68,9 @@ fn init_logger(verbosity: u8) {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::List { weeks, from, verbose, csv, json, html } => {
+        Commands::List { weeks, from, to, verbose, csv, json, html } => {
             init_logger(verbose);
-            list_studies(weeks, from, csv, json, html)?
+            list_studies(weeks, from, to, csv, json, html)?
         }
     }
     Ok(())
@@ -101,15 +104,22 @@ struct Row {
 }
 
 /// Execute the listing workflow and print/export results.
-fn list_studies(weeks: i64, from: Option<String>, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
+fn list_studies(weeks: i64, from: Option<String>, to: Option<String>, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
     let runs: Vec<RunRecord> = if let Some(from_s) = from {
         let start = NaiveDate::parse_from_str(&from_s, "%Y-%m-%d")
             .with_context(|| format!("--from must be YYYY-MM-DD, got: {}", from_s))?;
-        // closed window [start, start + weeks)
-        let end = start + Duration::weeks(weeks);
-        info!("released-only window: {} .. {}", start, end - Duration::days(1));
-        fetch_runs_between(start, end - Duration::days(1))?
+        let end_inclusive = if let Some(to_s) = to {
+            let to_d = NaiveDate::parse_from_str(&to_s, "%Y-%m-%d")
+                .with_context(|| format!("--to must be YYYY-MM-DD, got: {}", to_s))?;
+            if to_d < start { bail!("--to ({}) is before --from ({})", to_d, start); }
+            to_d
+        } else {
+            (start + Duration::weeks(weeks)) - Duration::days(1)
+        };
+        info!("released-only window: {} .. {} (inclusive)", start, end_inclusive);
+        fetch_runs_between(start, end_inclusive)?
     } else {
+        if to.is_some() { bail!("--to requires --from"); }
         let since = (Utc::now() - Duration::weeks(weeks)).date_naive();
         info!("rolling window (released OR updated) since {} ({} weeks)", since, weeks);
         fetch_runs_since(since)?
