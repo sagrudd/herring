@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use serde::Serialize;
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 mod ena;
 use ena::{fetch_runs_since, fetch_runs_between, map_platform, map_strategy, RunRecord};
@@ -223,7 +224,13 @@ fn write_json(rows: &[Row], path: PathBuf) -> Result<()> {
 }
 
 fn escape_html(s: &str) -> String {
+
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('\"', "&quot;").replace('\'', "&#39;")
+}
+
+fn wikipedia_search_url(title: &str) -> String {
+    let enc = utf8_percent_encode(title.trim(), NON_ALPHANUMERIC).to_string();
+    format!("https://en.wikipedia.org/w/index.php?search={}", enc)
 }
 
 fn write_html(rows: &[Row], path: PathBuf) -> Result<()> {
@@ -248,7 +255,8 @@ fn write_html(rows: &[Row], path: PathBuf) -> Result<()> {
         html.push_str(&format!("<td>{}</td>", escape_html(&r.release)));
         html.push_str(&format!("<td>{}</td>", escape_html(&r.platform)));
         html.push_str(&format!("<td>{}</td>", escape_html(&r.seq_type)));
-        html.push_str(&format!("<td>{}</td>", escape_html(&r.species)));
+        let species_links = if r.species.trim().is_empty() { String::new() } else { r.species.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| format!("<a href=\"{}\" target=\"_blank\" rel=\"noopener\">{}</a>", wikipedia_search_url(s), escape_html(s))).collect::<Vec<_>>().join(", ") };
+        html.push_str(&format!("<td>{}</td>", species_links));
         html.push_str(&format!("<td data-v=\"{}\">{}</td>", r.biosamples, r.biosamples));
         html.push_str(&format!("<td data-v=\"{}\">{}</td>", r.gigabases_num, r.gigabases_str));
         html.push_str(&format!("<td>{}</td>", escape_html(&r.title)));
