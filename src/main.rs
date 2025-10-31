@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
-use chrono::{Duration, Utc};
+use chrono::{Duration, Utc, NaiveDate};
 use polars::prelude::*;
 use polars::prelude::SortMultipleOptions;
 use log::info;
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 mod ena;
-use ena::{fetch_runs_since, map_platform, map_strategy, RunRecord};
+use ena::{fetch_runs_since, fetch_runs_between, map_platform, map_strategy, RunRecord};
 
 #[derive(Parser, Debug)]
 #[command(name = "herring", version, about = "List recent ENA studies with Oxford Nanopore data")]
@@ -25,9 +25,12 @@ struct Cli {
 enum Commands {
     /// List studies released or updated in the last N weeks (default: 8).
     List {
-        /// Weeks back from today (UTC).
+        /// Weeks back from today (UTC) OR used as the window length with --from.
         #[arg(short, long, default_value_t = 8)]
         weeks: i64,
+        /// Start date (YYYY-MM-DD) for a fixed release window. Uses first_public between FROM and FROM+weeks.
+        #[arg(long, value_name="YYYY-MM-DD")]
+        from: Option<String>,
         /// Increase log verbosity: -v (info), -vv (debug)
         #[arg(short, long, action = ArgAction::Count)]
         verbose: u8,
@@ -55,9 +58,9 @@ fn init_logger(verbosity: u8) {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::List { weeks, verbose, csv, json, html } => {
+        Commands::List { weeks, from, verbose, csv, json, html } => {
             init_logger(verbose);
-            list_studies(weeks, csv, json, html)?
+            list_studies(weeks, from, csv, json, html)?
         }
     }
     Ok(())
@@ -88,15 +91,22 @@ struct Row {
     title: String,
 }
 
-fn list_studies(weeks: i64, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
-    let since = (Utc::now() - Duration::weeks(weeks)).date_naive();
-    info!("listing studies since {} ({} weeks)", since, weeks);
-
-    let runs: Vec<RunRecord> = fetch_runs_since(since)
-        .context("fetching ONT runs from ENA portal API")?;
+fn list_studies(weeks: i64, from: Option<String>, csv: Option<PathBuf>, json: Option<PathBuf>, html: Option<PathBuf>) -> Result<()> {
+    let runs: Vec<RunRecord> = if let Some(from_s) = from {
+        let start = NaiveDate::parse_from_str(&from_s, "%Y-%m-%d")
+            .with_context(|| format!("--from must be YYYY-MM-DD, got: {}", from_s))?;
+        // closed window [start, start + weeks)
+        let end = start + Duration::weeks(weeks);
+        info!("released-only window: {} .. {}", start, end - Duration::days(1));
+        fetch_runs_between(start, end - Duration::days(1))?
+    } else {
+        let since = (Utc::now() - Duration::weeks(weeks)).date_naive();
+        info!("rolling window (released OR updated) since {} ({} weeks)", since, weeks);
+        fetch_runs_since(since)?
+    };
 
     if runs.is_empty() {
-        println!("No Oxford Nanopore runs found in the last {} weeks.", weeks);
+        println!("No Oxford Nanopore runs found for the selected window.");
         return Ok(())
     }
 

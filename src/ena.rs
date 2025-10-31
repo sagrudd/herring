@@ -130,7 +130,7 @@ fn handshake(client: &Client) -> Result<()> {
 }
 
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.34 (+https://nanoporetech.com)";
+    let ua = "herring/0.1.35 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
@@ -191,5 +191,47 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
         start = end + chrono::Duration::days(1);
     }
 
+    Ok(out)
+}
+
+pub fn fetch_runs_between(start: chrono::NaiveDate, end: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
+    let ua = "herring/0.1.35 (+https://nanoporetech.com)";
+    let client = make_client(ua)?;
+    if let Err(e) = handshake(&client) {
+        warn!("ENA handshake warning: {}", e);
+    }
+
+    let fields = [
+        "run_accession","study_accession","sample_accession","base_count",
+        "instrument_model","library_strategy","scientific_name","first_public","study_title",
+    ].join(",");
+
+    let mut dedup: HashSet<String> = HashSet::new();
+    let mut out: Vec<RunRecord> = Vec::new();
+
+    let mut s = start;
+    while s <= end {
+        let e = std::cmp::min(s + chrono::Duration::days(13), end);
+        let q = format!(
+            r#"instrument_platform="OXFORD_NANOPORE" AND (first_public>={s} AND first_public<={e})"#,
+            s = s.format("%Y-%m-%d"),
+            e = e.format("%Y-%m-%d")
+        );
+        debug!("released-only window raw_query: {}", q);
+        let url = build_url(&q, &fields);
+        let r = request_with_retries(&client, &url)?;
+        if !r.status().is_success() { bail!("ENA search(read_run) failed: {} (released window {}..{})", r.status(), s, e); }
+        let mut runs: Vec<RunRecord> = r.json().context("decode read_run json (released window)")?;
+        for rec in runs.drain(..) {
+            if let Some(acc) = rec.run_accession.as_ref() {
+                if dedup.insert(acc.clone()) { out.push(rec); }
+            } else {
+                out.push(rec);
+            }
+        }
+        s = e + chrono::Duration::days(1);
+    }
+
+    info!("released-only window {}..{} -> {} runs", start, end, out.len());
     Ok(out)
 }
