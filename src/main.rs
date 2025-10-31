@@ -5,7 +5,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use chrono::{Duration, Utc};
 use polars::prelude::*;
 use polars::prelude::SortMultipleOptions;
-use log::{info};
+use log::info;
 
 mod ena;
 use ena::{fetch_runs_since, map_platform, map_strategy, RunRecord};
@@ -69,11 +69,8 @@ fn list_studies(weeks: i64) -> Result<()> {
         plats: BTreeSet<String>,
         types: BTreeSet<String>,
         species: BTreeSet<String>,
-        samples: BTreeSet<String>,
         title: String,
         release: String,
-        base_bp: u128,
-        bytes: u128,
     }
 
     let mut by_study: BTreeMap<String, Agg> = BTreeMap::new();
@@ -83,15 +80,8 @@ fn list_studies(weeks: i64) -> Result<()> {
         a.plats.insert(map_platform(r.instrument_model.as_deref()).to_string());
         if let Some(strat) = r.library_strategy.as_deref() { a.types.insert(map_strategy(strat)); }
         if let Some(sp) = r.scientific_name.as_deref() { if !sp.is_empty() { a.species.insert(sp.to_string()); } }
-        if let Some(samp) = r.sample_accession.as_deref() { if !samp.is_empty() { a.samples.insert(samp.to_string()); } }
         if let Some(fp) = r.first_public.as_deref() { if a.release.is_empty() || fp < a.release.as_str() { a.release = fp.to_string(); } }
         if let Some(t) = r.study_title.as_deref() { if !t.is_empty() && a.title.is_empty() { a.title = t.to_string(); } }
-        if let Some(bc) = r.base_count.as_deref().and_then(|v| v.parse::<u128>().ok()) { a.base_bp += bc; }
-        let bytes = r
-            .fastq_bytes.as_deref().and_then(|v| v.parse::<u128>().ok())
-            .or_else(|| r.submitted_bytes.as_deref().and_then(|v| v.parse::<u128>().ok()))
-            .unwrap_or(0);
-        a.bytes += bytes;
     }
 
     #[derive(Clone)]
@@ -102,9 +92,6 @@ fn list_studies(weeks: i64) -> Result<()> {
         seq_type: String,
         species: String,
         title: String,
-        biosamples: u32,
-        gbases: f64,
-        gbytes: f64,
     }
 
     let mut rows: Vec<Row> = Vec::new();
@@ -117,9 +104,7 @@ fn list_studies(weeks: i64) -> Result<()> {
             if v.len() > 5 { v.truncate(5); }
             v.join(", ")
         };
-        let gbases = (a.base_bp as f64) / 1e9_f64;
-        let gbytes = (a.bytes as f64) / 1e9_f64;
-        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, title: a.title, biosamples: a.samples.len() as u32, gbases, gbytes });
+        rows.push(Row { acc, release: a.release, platform: plat, seq_type: seqt, species: sp, title: a.title });
     }
 
     let acc: Vec<_> = rows.iter().map(|r| r.acc.as_str()).collect();
@@ -128,9 +113,6 @@ fn list_studies(weeks: i64) -> Result<()> {
     let seq_type: Vec<_> = rows.iter().map(|r| r.seq_type.as_str()).collect();
     let species: Vec<_> = rows.iter().map(|r| r.species.as_str()).collect();
     let title: Vec<_> = rows.iter().map(|r| r.title.as_str()).collect();
-    let biosamples: Vec<_> = rows.iter().map(|r| r.biosamples).collect();
-    let gbases: Vec<_> = rows.iter().map(|r| r.gbases).collect();
-    let gbytes: Vec<_> = rows.iter().map(|r| r.gbytes).collect();
 
     let df = df!(
         "study_accession" => acc,
@@ -139,9 +121,6 @@ fn list_studies(weeks: i64) -> Result<()> {
         "sequencing_type" => seq_type,
         "species" => species,
         "study_title" => title,
-        "biosamples" => biosamples,
-        "gbases" => gbases,
-        "gbytes" => gbytes,
     )?;
 
     let df = df.sort(["release_date"], SortMultipleOptions { descending: vec![true], ..Default::default() })?;

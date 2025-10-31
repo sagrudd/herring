@@ -16,10 +16,6 @@ pub struct RunRecord {
     pub scientific_name: Option<String>,
     pub first_public: Option<String>,
     pub study_title: Option<String>,
-    pub sample_accession: Option<String>,
-    pub base_count: Option<String>,
-    pub fastq_bytes: Option<String>,
-    pub submitted_bytes: Option<String>,
 }
 
 pub fn map_platform(model: Option<&str>) -> &'static str {
@@ -100,31 +96,43 @@ fn request_with_retries(client: &Client, url: &str) -> Result<reqwest::blocking:
 }
 
 fn build_url(query: &str, fields: &str) -> String {
-    format!(
+    let enc_query = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
+    let url = format!(
         "{base}/search?result=read_run&dataPortal=ena&query={query}&fields={fields}&format=json&limit=0",
         base = PORTAL_BASE,
-        query = utf8_percent_encode(query, NON_ALPHANUMERIC),
+        query = enc_query,
         fields = fields
-    )
+    );
+    debug!("built URL: {}", url);
+    url
+}
+
+fn ping_results(client: &Client) -> Result<()> {
+    let url = format!("{}/results?dataPortal=ena", PORTAL_BASE);
+    let r = request_with_retries(client, &url)?;
+    if r.status().is_success() { Ok(()) } else { bail!("results ping failed: {}", r.status()) }
 }
 
 fn handshake(client: &Client) -> Result<()> {
-    let url1 = format!("{}/returnFields?result=read_run", PORTAL_BASE);
-    let r1 = request_with_retries(client, &url1)?;
-    if !r1.status().is_success() { bail!("handshake returnFields failed: {}", r1.status()); }
-
-    let url2 = build_url("instrument_platform=\\\"OXFORD_NANOPORE\\\"", "run_accession").replace("limit=0", "limit=1");
+    if let Err(e) = ping_results(client) {
+        warn!("ENA results ping failed: {}", e);
+    }
+    let raw_q: &str = r#"instrument_platform="OXFORD_NANOPORE""#;
+    debug!("handshake raw_query: {}", raw_q);
+    let url2 = build_url(raw_q, "run_accession").replace("limit=0", "limit=1");
     let r2 = request_with_retries(client, &url2)?;
-    if !r2.status().is_success() { bail!("handshake minimal search failed: {}", r2.status()); }
+    if !r2.status().is_success() {
+        warn!("handshake minimal search failed: {}", r2.status());
+    }
     Ok(())
 }
 
 pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
-    let ua = "herring/0.1.23 (+https://nanoporetech.com)";
+    let ua = "herring/0.1.30 (+https://nanoporetech.com)";
     let client = make_client(ua)?;
 
     if let Err(e) = handshake(&client) {
-        bail!("ENA handshake failed: {}", e);
+        warn!("ENA handshake warning: {}", e);
     }
 
     let fields = [
@@ -135,16 +143,13 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
         "scientific_name",
         "first_public",
         "study_title",
-        "sample_accession",
-        "base_count",
-        "fastq_bytes",
-        "submitted_bytes",
     ].join(",");
 
     let q_full = format!(
-        "instrument_platform=\\\"OXFORD_NANOPORE\\\" AND (first_public>={d} OR last_updated>={d})",
+        r#"instrument_platform="OXFORD_NANOPORE" AND (first_public>={d} OR last_updated>={d})"#,
         d = since.format("%Y-%m-%d")
     );
+    debug!("full-window raw_query: {}", q_full);
     let url_full = build_url(&q_full, &fields);
     let resp = request_with_retries(&client, &url_full)?;
     if resp.status().is_success() {
@@ -161,10 +166,11 @@ pub fn fetch_runs_since(since: chrono::NaiveDate) -> Result<Vec<RunRecord>> {
     while start <= today {
         let end = std::cmp::min(start + chrono::Duration::days(13), today);
         let q = format!(
-            "instrument_platform=\\\"OXFORD_NANOPORE\\\" AND ((first_public>={s} AND first_public<={e}) OR (last_updated>={s} AND last_updated<={e}))",
+            r#"instrument_platform="OXFORD_NANOPORE" AND ((first_public>={s} AND first_public<={e}) OR (last_updated>={s} AND last_updated<={e}))"#,
             s = start.format("%Y-%m-%d"),
             e = end.format("%Y-%m-%d")
         );
+        debug!("window raw_query: {}", q);
         let url = build_url(&q, &fields);
         let r = request_with_retries(&client, &url)?;
         if !r.status().is_success() { bail!("ENA search(read_run) failed: {} (window {}..{})", r.status(), start, end); }
